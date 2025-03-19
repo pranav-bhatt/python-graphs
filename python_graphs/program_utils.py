@@ -18,45 +18,44 @@ import inspect
 import textwrap
 import uuid
 
-import gast as ast
+import ast as ast
 import six
 
 
 def getsource(obj):
-  """Gets the source for the given object.
+    """Gets the source for the given object.
 
-  Args:
-    obj: A module, class, method, function, traceback, frame, or code object.
-  Returns:
-    The source of the object, if available.
-  """
-  if inspect.ismethod(obj):
-    func = obj.__func__
-  else:
-    func = obj
-  source = inspect.getsource(func)
-  return textwrap.dedent(source)
+    Args:
+      obj: A module, class, method, function, traceback, frame, or code object.
+    Returns:
+      The source of the object, if available.
+    """
+    if inspect.ismethod(obj):
+        func = obj.__func__
+    else:
+        func = obj
+    source = inspect.getsource(func)
+    return textwrap.dedent(source)
 
 
 def program_to_ast(program):
-  """Convert a program to its AST.
+    """Convert a program to its AST.
 
-  Args:
-    program: Either an AST node, source string, or a function.
-  Returns:
-    The root AST node of the AST representing the program.
-  """
-  if isinstance(program, ast.AST):
-    return program
-  if isinstance(program, six.string_types):
-    source = program
-  else:
-    source = getsource(program)
-  module_node = ast.parse(source, mode='exec')
-  return module_node
+    Args:
+      program: Either an AST node, source string, or a function.
+    Returns:
+      The root AST node of the AST representing the program.
+    """
+    if isinstance(program, ast.AST):
+        return program
+    if isinstance(program, six.string_types):
+        source = program
+    else:
+        source = getsource(program)
+    module_node = ast.parse(source, mode="exec")
+    return module_node
 
 
 def unique_id():
-  """Returns a unique id that is suitable for identifying graph nodes."""
-  return uuid.uuid4().int & ((1 << 64) - 1)
-
+    """Returns a unique id that is suitable for identifying graph nodes."""
+    return uuid.uuid4().int & ((1 << 64) - 1)

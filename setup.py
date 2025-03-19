@@ -27,56 +27,46 @@ SHORT_DESCRIPTION = """
 A library for generating graph representations of Python programs.""".strip()
 
 DEPENDENCIES = [
-    'absl-py',
-    'astunparse',
-    'gast',
-    'networkx',
-    'pygraphviz',
-    'six',
+    "absl-py",
+    "astunparse",
+    "ast",
+    "networkx",
+    "pygraphviz",
+    "six",
 ]
 
-TEST_DEPENDENCIES = [
-]
+TEST_DEPENDENCIES = []
 
-VERSION = '1.3.0'
-URL = 'https://github.com/google-research/python-graphs'
+VERSION = "1.3.0"
+URL = "https://github.com/google-research/python-graphs"
 
 setup(
-    name='python_graphs',
+    name="python_graphs",
     version=VERSION,
     description=SHORT_DESCRIPTION,
     long_description=LONG_DESCRIPTION,
     url=URL,
-
-    author='David Bieber',
-    author_email='dbieber@google.com',
-    license='Apache Software License',
-
+    author="David Bieber",
+    author_email="dbieber@google.com",
+    license="Apache Software License",
     classifiers=[
-        'Development Status :: 4 - Beta',
-
-        'Intended Audience :: Developers',
-        'Topic :: Software Development :: Libraries :: Python Modules',
-
-        'License :: OSI Approved :: Apache Software License',
-
-        'Programming Language :: Python',
-        'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
-        'Programming Language :: Python :: 3.8',
-        'Programming Language :: Python :: 3.9',
-
-        'Operating System :: OS Independent',
-        'Operating System :: POSIX',
-        'Operating System :: MacOS',
-        'Operating System :: Unix',
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "License :: OSI Approved :: Apache Software License",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Operating System :: OS Independent",
+        "Operating System :: POSIX",
+        "Operating System :: MacOS",
+        "Operating System :: Unix",
     ],
-
-    keywords='python program control flow data flow graph neural network',
-
-    packages=['python_graphs'],
-
+    keywords="python program control flow data flow graph neural network",
+    packages=["python_graphs"],
     install_requires=DEPENDENCIES,
     tests_require=TEST_DEPENDENCIES,
 )

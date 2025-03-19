@@ -1,0 +1,31 @@
+{
+    "configurations": [
+        {
+            "type": "debugpy",
+            "request": "launch",
+            "name": "Launch Program",
+            "program": "${workspaceFolder}/${input:programPath}"
+        },
+        {
+            "type": "debugpy",
+            "request": "launch",
+            "name": "Debug Tests",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/${input:testPath}"
+            ]
+        }
+    ],
+    "inputs": [
+        {
+            "type": "promptString",
+            "id": "programPath",
+            "description": "Path to the Python file you want to debug"
+        },
+        {
+            "type": "promptString",
+            "id": "testPath",
+            "description": "Path to the test file or directory you want to debug"
+        }
+    ]
+}
