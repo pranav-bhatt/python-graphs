@@ -36,8 +36,6 @@ from python_graphs import program_graph_dataclasses as pb
 from python_graphs import program_utils
 from python_graphs import unparser_patch  # pylint: disable=unused-import
 
-# Legacy compatibility removed (e.g., six) – Python 3 only.
-
 NEWLINE_TOKEN = "#NEWLINE#"
 UNINDENT_TOKEN = "#UNINDENT#"
 INDENT_TOKEN = "#INDENT#"
@@ -151,10 +149,18 @@ class ProgramGraph(object):
         return next(self.get_nodes_by_function_name(name))
 
     def get_node_by_ast_node(self, ast_node):
-        return self.ast_id_to_program_graph_node[id(ast_node)]
+        dumped = ast.dump(ast_node)
+        for pg_node in self.ast_id_to_program_graph_node.values():
+            if ast.dump(pg_node.ast_node) == dumped:
+                return pg_node
+        raise ValueError("AST node not found in the program graph.")
 
     def contains_ast_node(self, ast_node):
-        return id(ast_node) in self.ast_id_to_program_graph_node
+        dumped = ast.dump(ast_node)
+        for pg_node in self.ast_id_to_program_graph_node.values():
+            if ast.dump(pg_node.ast_node) == dumped:
+                return True
+        return False
 
     def get_ast_nodes_of_type(self, ast_type):
         for node in self.nodes.values():
@@ -173,7 +179,7 @@ class ProgramGraph(object):
 
     # Graph Construction Methods
     def add_node(self, node):
-        """Adds a ProgramGraphNode to this graph.
+        """Adds an ProgramGraphNode to this graph.
 
         Args:
           node: The ProgramGraphNode that should be added.
@@ -260,19 +266,25 @@ class ProgramGraph(object):
                     child_id = other_node_id
                     child = self.get_node_by_id(child_id)
                     try:
-                        child_ast = self._build_ast(node=child, update_references=update_references)
+                        child_ast = self._build_ast(
+                            node=child, update_references=update_references
+                        )
                         setattr(ast_node, edge.field_name, child_ast)
                     except Exception as e:
                         error_info = {
                             "original_node_type": type(ast_node).__name__,
                             "field": edge.field_name,
-                            "error_message": str(e)
+                            "error_message": str(e),
                         }
-                        logging.warning(json.dumps({
-                            "level": "warning",
-                            "message": "Error processing AST field",
-                            "details": error_info,
-                        }))
+                        logging.warning(
+                            json.dumps(
+                                {
+                                    "level": "warning",
+                                    "message": "Error processing AST field",
+                                    "details": error_info,
+                                }
+                            )
+                        )
                         placeholder = make_placeholder_node(
                             original_node_type=type(ast_node).__name__,
                             error_message=str(e),
@@ -293,7 +305,9 @@ class ProgramGraph(object):
                     child_id = other_node_id
                     child = self.get_node_by_id(child_id)
                     _, index = parse_list_field_name(edge.field_name)
-                    list_items[index] = self._build_ast(node=child, update_references=update_references)
+                    list_items[index] = self._build_ast(
+                        node=child, update_references=update_references
+                    )
             ast_list = []
             for index in range(len(list_items)):
                 ast_list.append(list_items[index])
@@ -301,7 +315,9 @@ class ProgramGraph(object):
         elif node.node_type == pb.NodeType.AST_VALUE:
             return node.ast_value
         else:
-            raise ValueError("This ProgramGraphNode does not correspond to a node in an AST.")
+            raise ValueError(
+                "This ProgramGraphNode does not correspond to a node in an AST."
+            )
 
     def walk_ast_descendants(self, node=None):
         """Yields the nodes that correspond to the descendants of node in the AST."""
@@ -358,6 +374,7 @@ class ProgramGraph(object):
 
     def dump_tree(self, start_node=None):
         """Returns a string representation for debugging."""
+
         def dump_tree_recurse(node, indent, all_lines):
             indent_str = " " + ("--" * indent)
             node_str = dump_node(node)
@@ -365,10 +382,15 @@ class ProgramGraph(object):
             all_lines.append(line)
             # Output long distance edges.
             for edge, neighbor_id in self.neighbors_map[node.id]:
-                if not is_ast_edge(edge) and not is_syntax_edge(edge) and node.id == edge.id1:
+                if (
+                    not is_ast_edge(edge)
+                    and not is_syntax_edge(edge)
+                    and node.id == edge.id1
+                ):
                     type_str = edge.type.name
-                    line = " ".join([indent_str, "--((",
-                                      type_str, "))-->", str(neighbor_id), "\n"])
+                    line = " ".join(
+                        [indent_str, "--((", type_str, "))-->", str(neighbor_id), "\n"]
+                    )
                     all_lines.append(line)
             for child in self.children(node):
                 dump_tree_recurse(child, indent + 1, all_lines)
@@ -387,13 +409,15 @@ class ProgramGraph(object):
         for edge in self.edges:
             v1 = self.nodes[edge.id1]
             v2 = self.nodes[edge.id2]
-            adj_bad_subtree = (edge.id1 in descendant_ids) or (edge.id2 in descendant_ids)
+            adj_bad_subtree = (edge.id1 in descendant_ids) or (
+                edge.id2 in descendant_ids
+            )
             if adj_bad_subtree:
                 if edge.id2 == node.id and is_ast_edge(edge):
                     placeholder = make_placeholder_node(
                         original_node_type="AST",
                         error_message="Subtree removed",
-                        field_name="copy_with_placeholder"
+                        field_name="copy_with_placeholder",
                     )
                     placeholder.id = node.id
                     new_graph.add_node(placeholder)
@@ -485,21 +509,31 @@ def get_program_graph(program):
             if isinstance(value, list):
                 pg_node = make_node_for_ast_list()
                 program_graph.add_node(pg_node)
-                program_graph.add_new_edge(ast_node, pg_node, pb.EdgeType.FIELD, field_name)
+                program_graph.add_new_edge(
+                    ast_node, pg_node, pb.EdgeType.FIELD, field_name
+                )
                 for index, item in enumerate(value):
                     list_field_name = make_list_field_name(field_name, index)
                     if isinstance(item, ast.AST):
-                        program_graph.add_new_edge(pg_node, item, pb.EdgeType.FIELD, list_field_name)
+                        program_graph.add_new_edge(
+                            pg_node, item, pb.EdgeType.FIELD, list_field_name
+                        )
                     else:
                         item_node = make_node_from_ast_value(item)
                         program_graph.add_node(item_node)
-                        program_graph.add_new_edge(pg_node, item_node, pb.EdgeType.FIELD, list_field_name)
+                        program_graph.add_new_edge(
+                            pg_node, item_node, pb.EdgeType.FIELD, list_field_name
+                        )
             elif isinstance(value, ast.AST):
-                program_graph.add_new_edge(ast_node, value, pb.EdgeType.FIELD, field_name)
+                program_graph.add_new_edge(
+                    ast_node, value, pb.EdgeType.FIELD, field_name
+                )
             else:
                 pg_node = make_node_from_ast_value(value)
                 program_graph.add_node(pg_node)
-                program_graph.add_new_edge(ast_node, pg_node, pb.EdgeType.FIELD, field_name)
+                program_graph.add_new_edge(
+                    ast_node, pg_node, pb.EdgeType.FIELD, field_name
+                )
 
     # Add SYNTAX_NODE nodes using the custom AST unparser.
     SyntaxNodeUnparser(program_node, program_graph)
@@ -514,22 +548,39 @@ def get_program_graph(program):
         instruction = control_flow_node.instruction
         for next_control_flow_node in control_flow_node.next:
             next_instruction = next_control_flow_node.instruction
-            program_graph.add_new_edge(instruction.node, next_instruction.node, edge_type=pb.EdgeType.CFG_NEXT)
+            program_graph.add_new_edge(
+                instruction.node, next_instruction.node, edge_type=pb.EdgeType.CFG_NEXT
+            )
 
     # Add data flow edges (LAST_READ and LAST_WRITE).
     for control_flow_node in control_flow_graph.get_control_flow_nodes():
-        last_accesses = control_flow_node.get_label("last_access_in").copy()
+        # Convert the label to a dict and convert each value to a list.
+        last_accesses = {
+            k: list(v) for k, v in control_flow_node.get_label("last_access_in").items()
+        }
         for access in control_flow_node.instruction.accesses:
             pg_node = program_graph.get_node_by_access(access)
             access_name = instruction_module.access_name(access)
             read_identifier = instruction_module.access_identifier(access_name, "read")
-            write_identifier = instruction_module.access_identifier(access_name, "write")
-            for read in last_accesses.get(read_identifier, []):
-                read_pg_node = program_graph.get_node_by_access(read)
-                program_graph.add_new_edge(pg_node, read_pg_node, edge_type=pb.EdgeType.LAST_READ)
-            for write in last_accesses.get(write_identifier, []):
-                write_pg_node = program_graph.get_node_by_access(write)
-                program_graph.add_new_edge(pg_node, write_pg_node, edge_type=pb.EdgeType.LAST_WRITE)
+            write_identifier = instruction_module.access_identifier(
+                access_name, "write"
+            )
+            # Add LAST_READ edge if a previous read exists.
+            if read_identifier in last_accesses and last_accesses[read_identifier]:
+                last_read = last_accesses[read_identifier][0]
+                program_graph.add_new_edge(
+                    pg_node,
+                    program_graph.get_node_by_access(last_read),
+                    edge_type=pb.EdgeType.LAST_READ,
+                )
+            # Add LAST_WRITE edge if a previous write exists.
+            if write_identifier in last_accesses and last_accesses[write_identifier]:
+                last_write = last_accesses[write_identifier][0]
+                program_graph.add_new_edge(
+                    pg_node,
+                    program_graph.get_node_by_access(last_write),
+                    edge_type=pb.EdgeType.LAST_WRITE,
+                )
             if instruction_module.access_is_read(access):
                 last_accesses[read_identifier] = [access]
             elif instruction_module.access_is_write(access):
@@ -541,7 +592,9 @@ def get_program_graph(program):
             for value_node in ast.walk(node.value):
                 if isinstance(value_node, ast.Name):
                     for target in node.targets:
-                        program_graph.add_new_edge(target, value_node, edge_type=pb.EdgeType.COMPUTED_FROM)
+                        program_graph.add_new_edge(
+                            target, value_node, edge_type=pb.EdgeType.COMPUTED_FROM
+                        )
 
     # Add CALLS, FORMAL_ARG_NAME and RETURNS_TO edges.
     for node in ast.walk(program_node):
@@ -552,14 +605,20 @@ def get_program_graph(program):
                     if node.func.id in dir(__import__("builtins")):
                         message = "Function is builtin."
                     else:
-                        message = "Cannot statically determine the function being called."
+                        message = (
+                            "Cannot statically determine the function being called."
+                        )
                     logging.debug("%s (%s)", message, node.func.id)
                 for func_def in func_defs:
                     fn_node = func_def.node
-                    program_graph.add_new_edge(node, fn_node, edge_type=pb.EdgeType.CALLS)
+                    program_graph.add_new_edge(
+                        node, fn_node, edge_type=pb.EdgeType.CALLS
+                    )
                     for inner_node in ast.walk(func_def.node):
                         if isinstance(inner_node, ast.Return):
-                            program_graph.add_new_edge(inner_node, node, edge_type=pb.EdgeType.RETURNS_TO)
+                            program_graph.add_new_edge(
+                                inner_node, node, edge_type=pb.EdgeType.RETURNS_TO
+                            )
                     for index, arg in enumerate(node.args):
                         formal_arg = None
                         if index < len(fn_node.args.args):
@@ -567,7 +626,9 @@ def get_program_graph(program):
                         elif fn_node.args.vararg:
                             formal_arg = fn_node.args
                         if formal_arg is not None:
-                            program_graph.add_new_edge(arg, formal_arg, edge_type=pb.EdgeType.FORMAL_ARG_NAME)
+                            program_graph.add_new_edge(
+                                arg, formal_arg, edge_type=pb.EdgeType.FORMAL_ARG_NAME
+                            )
                         else:
                             logging.debug("formal_arg is None")
                     for keyword in node.keywords:
@@ -581,11 +642,18 @@ def get_program_graph(program):
                             if fn_node.args.kwarg:
                                 formal_arg = fn_node.args
                         if formal_arg is not None:
-                            program_graph.add_new_edge(keyword.value, formal_arg, edge_type=pb.EdgeType.FORMAL_ARG_NAME)
+                            program_graph.add_new_edge(
+                                keyword.value,
+                                formal_arg,
+                                edge_type=pb.EdgeType.FORMAL_ARG_NAME,
+                            )
                         else:
                             logging.debug("formal_arg is None")
             else:
-                logging.debug("Cannot statically determine the function being called. (%s)", astunparse.unparse(node.func).strip())
+                logging.debug(
+                    "Cannot statically determine the function being called. (%s)",
+                    astunparse.unparse(node.func).strip(),
+                )
 
     return program_graph
 
@@ -612,7 +680,9 @@ class SyntaxNodeUnparser(unparser.Unparser):
         try:
             text_with_whitespace = NEWLINE_TOKEN
             if self.last_indent > self._indent:
-                text_with_whitespace += UNINDENT_TOKEN * (self.last_indent - self._indent)
+                text_with_whitespace += UNINDENT_TOKEN * (
+                    self.last_indent - self._indent
+                )
             elif self.last_indent < self._indent:
                 text_with_whitespace += INDENT_TOKEN * (self._indent - self.last_indent)
             self.last_indent = self._indent
@@ -620,16 +690,16 @@ class SyntaxNodeUnparser(unparser.Unparser):
             self._add_syntax_node(text_with_whitespace)
             super().fill(text)
         except Exception as e:
-            error_info = {
-                "operation": "fill",
-                "input": text,
-                "error_message": str(e)
-            }
-            logging.warning(json.dumps({
-                "level": "warning",
-                "message": "Error in SyntaxNodeUnparser.fill",
-                "details": error_info,
-            }))
+            error_info = {"operation": "fill", "input": text, "error_message": str(e)}
+            logging.warning(
+                json.dumps(
+                    {
+                        "level": "warning",
+                        "message": "Error in SyntaxNodeUnparser.fill",
+                        "details": error_info,
+                    }
+                )
+            )
             placeholder = make_placeholder_node("Syntax", str(e), "fill")
             self.graph.add_node(placeholder)
 
@@ -643,13 +713,17 @@ class SyntaxNodeUnparser(unparser.Unparser):
             error_info = {
                 "operation": "write",
                 "input": str(text),
-                "error_message": str(e)
+                "error_message": str(e),
             }
-            logging.warning(json.dumps({
-                "level": "warning",
-                "message": "Error in SyntaxNodeUnparser.write",
-                "details": error_info,
-            }))
+            logging.warning(
+                json.dumps(
+                    {
+                        "level": "warning",
+                        "message": "Error in SyntaxNodeUnparser.write",
+                        "details": error_info,
+                    }
+                )
+            )
             placeholder = make_placeholder_node("Syntax", str(e), "write")
             self.graph.add_node(placeholder)
 
@@ -660,27 +734,41 @@ class SyntaxNodeUnparser(unparser.Unparser):
                 return
             syntax_node = make_node_from_syntax(str(text))
             self.graph.add_node(syntax_node)
-            self.graph.add_new_edge(self.current_ast_node, syntax_node, edge_type=pb.EdgeType.SYNTAX)
+            self.graph.add_new_edge(
+                self.current_ast_node, syntax_node, edge_type=pb.EdgeType.SYNTAX
+            )
             if self.last_syntax_node:
-                self.graph.add_new_edge(self.last_syntax_node, syntax_node, edge_type=pb.EdgeType.NEXT_SYNTAX)
+                self.graph.add_new_edge(
+                    self.last_syntax_node,
+                    syntax_node,
+                    edge_type=pb.EdgeType.NEXT_SYNTAX,
+                )
             self.last_syntax_node = syntax_node
         except Exception as e:
             error_info = {
                 "operation": "_add_syntax_node",
                 "input": text,
-                "error_message": str(e)
+                "error_message": str(e),
             }
-            logging.warning(json.dumps({
-                "level": "warning",
-                "message": "Error in _add_syntax_node",
-                "details": error_info,
-            }))
+            logging.warning(
+                json.dumps(
+                    {
+                        "level": "warning",
+                        "message": "Error in _add_syntax_node",
+                        "details": error_info,
+                    }
+                )
+            )
             placeholder = make_placeholder_node("Syntax", str(e), "_add_syntax_node")
             self.graph.add_node(placeholder)
 
     def _Name(self, node):
         if node.id in self.last_lexical_uses:
-            self.graph.add_new_edge(node, self.last_lexical_uses[node.id], edge_type=pb.EdgeType.LAST_LEXICAL_USE)
+            self.graph.add_new_edge(
+                node,
+                self.last_lexical_uses[node.id],
+                edge_type=pb.EdgeType.LAST_LEXICAL_USE,
+            )
         self.last_lexical_uses[node.id] = node
         super()._Name(node)
 
@@ -690,6 +778,7 @@ class ProgramGraphNode(object):
 
     Corresponds to either a SyntaxNode or an Instruction.
     """
+
     def __init__(self):
         self.node_type = None
         self.id = None

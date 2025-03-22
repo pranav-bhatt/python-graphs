@@ -354,6 +354,7 @@ def test_control_flow_reads_and_writes_appear_once():
                     write not in writes
                 ), f"Duplicate write: {instruction_module.access_name(write)}"
                 writes.add(write)
+            print("test")
 
 
 # --- Additional Coverage Tests for ControlFlowNode ---
@@ -598,12 +599,7 @@ def f():
     for b in graph.blocks:
         # Override each block's instructions with the underlying instruction objects.
         b.instructions = [cf.instruction for cf in b.control_flow_nodes]
-    try:
-        block_found = next(
-            graph.get_blocks_by_source_and_ast_node_type(source, ast.Assign)
-        )
-    except StopIteration:
-        pytest.skip("No block for ast.Assign produced.")
+    block_found = next(graph.get_blocks_by_source_and_ast_node_type(source, ast.Assign))
     block2 = graph.get_block_by_ast_node_type_and_label(ast.Assign, block_found.label)
     assert block2 is not None, "Expected to retrieve block by AST node type and label."
 
@@ -655,8 +651,6 @@ def foo(*args, **kwargs):
     graph = control_flow.get_control_flow_graph(source)
     instructions = list(graph.get_instructions())
     found = any(instr.source == instruction_module.ARGS for instr in instructions)
-    if not found:
-        pytest.skip("No ARGS instruction produced for varargs/kwargs.")
     assert (
         found
     ), "Expected an instruction with source ARGS for varargs/kwargs handling."

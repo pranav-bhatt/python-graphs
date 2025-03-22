@@ -190,6 +190,9 @@ def create_writes(node, parent=None):
 
 def access_is_read(access):
     if isinstance(access, ast.AST):
+        # An ast.arg represents a function parameter, not a read.
+        if isinstance(access, ast.arg):
+            return False
         assert isinstance(access, ast.Name), access
         return isinstance(access.ctx, READ_CONTEXTS)
     else:
@@ -198,6 +201,9 @@ def access_is_read(access):
 
 def access_is_write(access):
     if isinstance(access, ast.AST):
+        # An ast.arg represents a function parameter, not a read.
+        if isinstance(access, ast.arg):
+            return False
         assert isinstance(access, ast.Name), access
         return isinstance(access.ctx, WRITE_CONTEXTS)
     else:
