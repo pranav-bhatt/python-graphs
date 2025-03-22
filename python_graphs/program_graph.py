@@ -1,3 +1,4 @@
+# program_graph.py
 # Copyright (C) 2021 Google Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,11 +25,13 @@ import codecs
 import collections
 import json
 import os
+import copy
+import ast
 
 from absl import logging
 import astunparse
 from astunparse import unparser
-import ast
+
 from python_graphs import control_flow
 from python_graphs import data_flow
 from python_graphs import instruction as instruction_module
@@ -49,7 +52,7 @@ class ProgramGraph(object):
       nodes: Maps from node id to the ProgramGraphNode with that id.
       edges: A list of the edges (from_node.id, to_node.id, edge type) in the graph.
       child_map: Maps from node id to a list of that node's AST children node ids.
-      parent_map: Maps from node id to that node's AST parent node id.
+      parent_map: Maps from node id to a set of that node's AST parent node ids.
       neighbors_map: Maps from node id to a list of that node's neighboring edges.
       ast_id_to_program_graph_node: Maps from an AST node's object id to the
         corresponding AST program graph node, if it exists.
@@ -63,7 +66,7 @@ class ProgramGraph(object):
         self.edges = []
         self.ast_id_to_program_graph_node = {}
         self.child_map = collections.defaultdict(list)
-        self.parent_map = collections.defaultdict(lambda: None)
+        self.parent_map = collections.defaultdict(set)  # now a set for multiple parents
         self.neighbors_map = collections.defaultdict(list)
 
     # Accessors
@@ -77,15 +80,6 @@ class ProgramGraph(object):
         return self.nodes.values()
 
     def get_node(self, obj):
-        """Returns the node in the program graph corresponding to an object.
-
-        Arguments:
-           obj: Can be an integer, AST node, ProgramGraphNode, or program graph node
-             protobuf.
-
-        Raises:
-           ValueError: no node exists in the program graph matching obj.
-        """
         if isinstance(obj, int) and obj in self.nodes:
             return self.get_node_by_id(obj)
         elif isinstance(obj, ProgramGraphNode):
@@ -98,31 +92,18 @@ class ProgramGraph(object):
             raise ValueError("Unexpected value for obj.", obj)
 
     def get_node_by_id(self, obj):
-        """Gets a ProgramGraph node for the given integer id."""
         return self.nodes[obj]
 
     def get_node_by_access(self, access):
-        """Gets a ProgramGraph node for the given read or write."""
-        if isinstance(access, ast.Name):
+        if isinstance(access, (ast.Name, ast.arg)):
             return self.get_node(access)
         else:
-            # Expecting a tuple; check the second element.
             if isinstance(access[1], ast.Name):
                 return self.get_node(access[1])
             else:
                 return self.get_node(access[2])
-        raise ValueError("Could not find node for access.", access)
 
     def get_nodes_by_source(self, source):
-        """Generates the nodes in the program graph containing the query source.
-
-        Args:
-          source: The query source.
-
-        Returns:
-          A generator of all nodes in the program graph with an Instruction with
-          source that includes the query source.
-        """
         module = ast.parse(source, mode="exec")
         node = module.body[0]
         if isinstance(node, ast.Expr):
@@ -139,26 +120,32 @@ class ProgramGraph(object):
     def get_node_by_source(self, node):
         return min(self.get_nodes_by_source(node), key=lambda x: len(ast.dump(x.node)))
 
-    def get_nodes_by_function_name(self, name):
+    def get_all_function_nodes_by_name(self, name):
         return filter(
             lambda n: n.has_instance_of(ast.FunctionDef) and n.node.name == name,
             self.nodes.values(),
         )
 
     def get_node_by_function_name(self, name):
-        return next(self.get_nodes_by_function_name(name))
+        return next(self.get_all_function_nodes_by_name(name))
 
     def get_node_by_ast_node(self, ast_node):
-        dumped = ast.dump(ast_node)
-        for pg_node in self.ast_id_to_program_graph_node.values():
-            if ast.dump(pg_node.ast_node) == dumped:
-                return pg_node
+        key = id(ast_node)
+        if key in self.ast_id_to_program_graph_node:
+            return self.ast_id_to_program_graph_node[key]
         raise ValueError("AST node not found in the program graph.")
 
-    def contains_ast_node(self, ast_node):
-        dumped = ast.dump(ast_node)
+    def get_node_by_ast_dump(self, ast_node):
+        """Search based on structural equality (using ast.dump)."""
+        dump_val = ast.dump(ast_node)
         for pg_node in self.ast_id_to_program_graph_node.values():
-            if ast.dump(pg_node.ast_node) == dumped:
+            if ast.dump(pg_node.ast_node) == dump_val:
+                return pg_node
+        raise ValueError("AST node (by dump) not found in the program graph.")
+
+    def contains_ast_node(self, ast_node):
+        for pg_node in self.ast_id_to_program_graph_node.values():
+            if pg_node.ast_node is ast_node:
                 return True
         return False
 
@@ -179,17 +166,6 @@ class ProgramGraph(object):
 
     # Graph Construction Methods
     def add_node(self, node):
-        """Adds an ProgramGraphNode to this graph.
-
-        Args:
-          node: The ProgramGraphNode that should be added.
-
-        Returns:
-          The node that was added.
-
-        Raises:
-          ValueError: the node has already been added to this graph.
-        """
         assert isinstance(node, ProgramGraphNode), "Not a ProgramGraphNode"
         if node.id in self.nodes:
             raise ValueError("Already contains node", self.nodes[node.id], node.id)
@@ -204,86 +180,216 @@ class ProgramGraph(object):
         node = make_node_from_instruction(instruction)
         return self.add_node(node)
 
+    def update_edge(self, existing_edge, new_edge):
+        existing_edge.has_back_edge = new_edge.has_back_edge
+        return existing_edge
+
     def add_edge(self, edge):
-        """Adds an edge between two nodes in the graph.
-
-        Args:
-          edge: The edge, a pb.Edge proto.
-        """
         assert isinstance(edge, pb.Edge), "Not a pb.Edge"
+        for existing_edge in self.edges:
+            if (
+                existing_edge.id1 == edge.id1
+                and existing_edge.id2 == edge.id2
+                and existing_edge.type == edge.type
+                and existing_edge.field_name == edge.field_name
+            ):
+                return self.update_edge(existing_edge, edge)
         self.edges.append(edge)
-
         n1 = self.get_node_by_id(edge.id1)
         n2 = self.get_node_by_id(edge.id2)
         if edge.type == pb.EdgeType.FIELD:
-            self.child_map[edge.id1].append(edge.id2)
-            self.parent_map[n2.id] = edge.id1
+            if edge.id2 not in self.child_map[edge.id1]:
+                self.child_map[edge.id1].append(edge.id2)
+            self.parent_map[n2.id].add(edge.id1)  # allow multiple parents
         self.neighbors_map[n1.id].append((edge, edge.id2))
         self.neighbors_map[n2.id].append((edge, edge.id1))
+        return edge
 
     def remove_edge(self, edge):
-        """Removes an edge from the graph."""
         self.edges.remove(edge)
-
         n1 = self.get_node_by_id(edge.id1)
         n2 = self.get_node_by_id(edge.id2)
-
         if edge.type == pb.EdgeType.FIELD:
-            self.child_map[edge.id1].remove(edge.id2)
-            del self.parent_map[n2.id]
-
-        self.neighbors_map[n1.id].remove((edge, edge.id2))
-        self.neighbors_map[n2.id].remove((edge, edge.id1))
+            if edge.id2 in self.child_map[edge.id1]:
+                self.child_map[edge.id1].remove(edge.id2)
+            if n2.id in self.parent_map and edge.id1 in self.parent_map[n2.id]:
+                self.parent_map[n2.id].remove(edge.id1)
+                if not self.parent_map[n2.id]:
+                    del self.parent_map[n2.id]
+        if (edge, edge.id2) in self.neighbors_map[n1.id]:
+            self.neighbors_map[n1.id].remove((edge, edge.id2))
+        if (edge, edge.id1) in self.neighbors_map[n2.id]:
+            self.neighbors_map[n2.id].remove((edge, edge.id1))
 
     def add_new_edge(self, n1, n2, edge_type=None, field_name=None):
         n1 = self.get_node(n1)
         n2 = self.get_node(n2)
         new_edge = pb.Edge(id1=n1.id, id2=n2.id, type=edge_type, field_name=field_name)
-        self.add_edge(new_edge)
-        return new_edge
+        updated_edge = self.add_edge(new_edge)
+        return updated_edge
 
     # AST Methods
     def to_ast(self, node=None):
-        """Convert the program graph to a Python AST."""
         if node is None:
             node = self.root
-        return self._build_ast(node=node, update_references=False)
+        return self._build_ast(node=node, update_references=False, visited={})
 
     def reconstruct_ast(self):
-        """Reconstruct all internal ProgramGraphNode.ast_node references."""
+        logging.info("Starting AST reconstruction...")
         self.ast_id_to_program_graph_node.clear()
-        self._build_ast(node=self.root, update_references=True)
+        _ = self._build_ast(node=self.root, update_references=True, visited={})
+        logging.info("Finished building AST from root (node id=%s)", self.root.id)
+        unreachable_count = 0
+        for node in self.all_nodes():
+            # Do not overwrite if already built.
+            if node.ast_node is not None:
+                continue
+            if node.node_type == pb.NodeType.AST_NODE and node.ast_node is None:
+                unreachable_count += 1
+                logging.info(
+                    "Unreachable node detected: id=%s, ast_type=%s",
+                    node.id,
+                    node.ast_type,
+                )
+                if node.instruction is not None:
+                    new_ast = copy.deepcopy(node.instruction.node)
+                    if isinstance(new_ast, ast.Constant) and new_ast.value is None:
+                        new_ast.value = node.ast_value
+                    node.ast_node = new_ast
+                    self.ast_id_to_program_graph_node[id(new_ast)] = node
+                    logging.info(
+                        "Updated unreachable node id=%s with new AST node id=%s (from instruction)",
+                        node.id,
+                        id(new_ast),
+                    )
+                else:
+                    if node.ast_type == "Name":
+                        default_id = node.ast_value if node.ast_value else str(node.id)
+                        new_ast = ast.Name(id=default_id, ctx=ast.Load())
+                        node.ast_node = new_ast
+                        dump_val = ast.dump(new_ast)
+                        keys_to_remove = [
+                            key
+                            for key, pg in self.ast_id_to_program_graph_node.items()
+                            if ast.dump(pg.ast_node) == dump_val
+                        ]
+                        for key in keys_to_remove:
+                            del self.ast_id_to_program_graph_node[key]
+                        self.ast_id_to_program_graph_node[id(new_ast)] = node
+                        logging.info(
+                            "Updated unreachable Name node id=%s with new AST Name (ast_value=%s)",
+                            node.id,
+                            default_id,
+                        )
+                    elif node.ast_type == "arguments":
+                        try:
+                            new_ast = ast.arguments(
+                                posonlyargs=[],
+                                args=[],
+                                vararg=None,
+                                kwonlyargs=[],
+                                kw_defaults=[],
+                                kwarg=None,
+                                defaults=[],
+                            )
+                        except TypeError:
+                            new_ast = ast.arguments(
+                                args=[],
+                                vararg=None,
+                                kwonlyargs=[],
+                                kw_defaults=[],
+                                kwarg=None,
+                                defaults=[],
+                            )
+                        node.ast_node = new_ast
+                        dump_val = ast.dump(new_ast)
+                        keys_to_remove = [
+                            key
+                            for key, pg in self.ast_id_to_program_graph_node.items()
+                            if ast.dump(pg.ast_node) == dump_val
+                        ]
+                        for key in keys_to_remove:
+                            del self.ast_id_to_program_graph_node[key]
+                        self.ast_id_to_program_graph_node[id(new_ast)] = node
+                        logging.info(
+                            "Updated unreachable arguments node id=%s with new AST arguments node",
+                            node.id,
+                        )
+                    else:
+                        logging.warning(
+                            "Unreachable node id=%s (ast_type=%s) has no instruction and no fallback; its ast_node remains None",
+                            node.id,
+                            node.ast_type,
+                        )
+        logging.info(
+            "AST reconstruction complete. Total unreachable nodes updated: %d",
+            unreachable_count,
+        )
 
-    def _build_ast(self, node, update_references):
-        """Helper method: builds an AST and optionally sets ast_node references."""
+    def _build_ast(self, node, update_references, visited):
+        if node.ast_node is not None:
+            visited[node.id] = node.ast_node
+            return node.ast_node
+        if node.id in visited:
+            return visited[node.id]
         if node.node_type == pb.NodeType.AST_NODE:
-            ast_node = getattr(ast, node.ast_type)()
-            adjacent_edges = self.neighbors_map[node.id]
-            for edge, other_node_id in adjacent_edges:
-                if other_node_id == edge.id1:  # incoming edge
+            if not node.ast_type:
+                return node.ast_value
+            try:
+                if node.ast_type == "Name":
+                    ast_node = ast.Name(id="", ctx=ast.Load())
+                elif node.ast_type == "Constant":
+                    ast_node = ast.Constant(value=None)
+                elif node.ast_type == "arguments":
+                    try:
+                        ast_node = ast.arguments(
+                            posonlyargs=[],
+                            args=[],
+                            vararg=None,
+                            kwonlyargs=[],
+                            kw_defaults=[],
+                            kwarg=None,
+                            defaults=[],
+                        )
+                    except TypeError:
+                        ast_node = ast.arguments(
+                            args=[],
+                            vararg=None,
+                            kwonlyargs=[],
+                            kw_defaults=[],
+                            kwarg=None,
+                            defaults=[],
+                        )
+                else:
+                    ast_node = getattr(ast, node.ast_type)()
+            except Exception as e:
+                logging.error(
+                    "Error constructing AST node for type %s: %s", node.ast_type, str(e)
+                )
+                raise ValueError(
+                    f"Error constructing AST node for type {node.ast_type}: {e}"
+                )
+            visited[node.id] = ast_node
+            if node.ast_value:
+                if isinstance(ast_node, ast.Name):
+                    ast_node.id = node.ast_value
+                elif isinstance(ast_node, ast.Constant):
+                    ast_node.value = node.ast_value
+            for edge, other_node_id in self.neighbors_map[node.id]:
+                if other_node_id == edge.id1:
                     continue
                 if edge.type == pb.EdgeType.FIELD:
-                    child_id = other_node_id
-                    child = self.get_node_by_id(child_id)
+                    child = self.get_node_by_id(other_node_id)
                     try:
                         child_ast = self._build_ast(
-                            node=child, update_references=update_references
+                            node=child,
+                            update_references=update_references,
+                            visited=visited,
                         )
                         setattr(ast_node, edge.field_name, child_ast)
                     except Exception as e:
-                        error_info = {
-                            "original_node_type": type(ast_node).__name__,
-                            "field": edge.field_name,
-                            "error_message": str(e),
-                        }
                         logging.warning(
-                            json.dumps(
-                                {
-                                    "level": "warning",
-                                    "message": "Error processing AST field",
-                                    "details": error_info,
-                                }
-                            )
+                            "Error processing AST field %s: %s", edge.field_name, str(e)
                         )
                         placeholder = make_placeholder_node(
                             original_node_type=type(ast_node).__name__,
@@ -297,30 +403,28 @@ class ProgramGraph(object):
             return ast_node
         elif node.node_type == pb.NodeType.AST_LIST:
             list_items = {}
-            adjacent_edges = self.neighbors_map[node.id]
-            for edge, other_node_id in adjacent_edges:
+            for edge, other_node_id in self.neighbors_map[node.id]:
                 if other_node_id == edge.id1:
                     continue
                 if edge.type == pb.EdgeType.FIELD:
-                    child_id = other_node_id
-                    child = self.get_node_by_id(child_id)
+                    child = self.get_node_by_id(other_node_id)
                     _, index = parse_list_field_name(edge.field_name)
                     list_items[index] = self._build_ast(
-                        node=child, update_references=update_references
+                        node=child, update_references=update_references, visited=visited
                     )
-            ast_list = []
-            for index in range(len(list_items)):
-                ast_list.append(list_items[index])
-            return ast_list
+            return [list_items[index] for index in range(len(list_items))]
         elif node.node_type == pb.NodeType.AST_VALUE:
             return node.ast_value
         else:
+            logging.error(
+                "This ProgramGraphNode does not correspond to a node in an AST (node id=%s)",
+                node.id,
+            )
             raise ValueError(
                 "This ProgramGraphNode does not correspond to a node in an AST."
             )
 
     def walk_ast_descendants(self, node=None):
-        """Yields the nodes that correspond to the descendants of node in the AST."""
         if node is None:
             node = self.root
         frontier = [node]
@@ -331,60 +435,45 @@ class ProgramGraph(object):
             yield current
 
     def parent(self, node):
-        """Returns the AST parent of an AST program graph node."""
-        parent_id = self.parent_map[node.id]
-        if parent_id is None:
-            return None
-        else:
-            return self.get_node_by_id(parent_id)
+        # Now returns the set of parent nodes.
+        parent_ids = self.parent_map[node.id]
+        return {self.get_node_by_id(pid) for pid in parent_ids} if parent_ids else set()
 
     def children(self, node):
-        """Yields the (direct) AST children of an AST program graph node."""
-        for child_id in self.child_map[node.id]:
-            yield self.get_node_by_id(child_id)
+        return (self.get_node_by_id(cid) for cid in self.child_map[node.id])
 
     def neighbors(self, node, edge_type=None):
-        """Returns the incoming and outgoing neighbors of a program graph node."""
         adj_edges = self.neighbors_map[node.id]
         if edge_type is None:
-            ids = [tup[1] for tup in adj_edges]
+            ids = [pair[1] for pair in adj_edges]
         else:
-            ids = [tup[1] for tup in adj_edges if tup[0].type == edge_type]
-        return [self.get_node_by_id(id0) for id0 in ids]
+            ids = [pair[1] for pair in adj_edges if pair[0].type == edge_type]
+        return [self.get_node_by_id(i) for i in ids]
 
     def incoming_neighbors(self, node, edge_type=None):
-        """Returns the incoming neighbors of a program graph node."""
-        adj_edges = self.neighbors_map[node.id]
         result = []
-        for edge, neighbor_id in adj_edges:
-            if edge.id2 == node.id:
-                if edge_type is None or edge.type == edge_type:
-                    result.append(self.get_node_by_id(neighbor_id))
+        for edge, neighbor_id in self.neighbors_map[node.id]:
+            if edge.id2 == node.id and (edge_type is None or edge.type == edge_type):
+                result.append(self.get_node_by_id(neighbor_id))
         return result
 
     def outgoing_neighbors(self, node, edge_type=None):
-        """Returns the outgoing neighbors of a program graph node."""
-        adj_edges = self.neighbors_map[node.id]
         result = []
-        for edge, neighbor_id in adj_edges:
-            if edge.id1 == node.id:
-                if edge_type is None or edge.type == edge_type:
-                    result.append(self.get_node_by_id(neighbor_id))
+        for edge, neighbor_id in self.neighbors_map[node.id]:
+            if edge.id1 == node.id and (edge_type is None or edge.type == edge_type):
+                result.append(self.get_node_by_id(neighbor_id))
         return result
 
     def dump_tree(self, start_node=None):
-        """Returns a string representation for debugging."""
-
         def dump_tree_recurse(node, indent, all_lines):
             indent_str = " " + ("--" * indent)
             node_str = dump_node(node)
             line = " ".join([indent_str, node_str, "\n"])
             all_lines.append(line)
-            # Output long distance edges.
             for edge, neighbor_id in self.neighbors_map[node.id]:
                 if (
-                    not is_ast_edge(edge)
-                    and not is_syntax_edge(edge)
+                    (not is_ast_edge(edge))
+                    and (not is_syntax_edge(edge))
                     and node.id == edge.id1
                 ):
                     type_str = edge.type.name
@@ -401,7 +490,6 @@ class ProgramGraph(object):
         return "".join(dump_tree_recurse(start_node, 0, []))
 
     def copy_with_placeholder(self, node):
-        """Returns a new program graph in which the subtree of NODE is replaced by a placeholder."""
         descendant_ids = {n.id for n in self.walk_ast_descendants(node)}
         new_graph = ProgramGraph()
         new_graph.add_node(self.root)
@@ -431,7 +519,6 @@ class ProgramGraph(object):
         return new_graph
 
     def copy_subgraph(self, node):
-        """Returns a new program graph containing only the subtree rooted at NODE."""
         descendant_ids = {n.id for n in self.walk_ast_descendants(node)}
         new_graph = ProgramGraph()
         new_graph.add_node(node)
@@ -485,25 +572,19 @@ def make_placeholder_node(original_node_type, error_message, field_name):
 
 
 def get_program_graph(program):
-    """Constructs a program graph to represent the given program."""
     program_node = program_utils.program_to_ast(program)
     program_graph = ProgramGraph()
 
-    # Perform control flow analysis.
     control_flow_graph = control_flow.get_control_flow_graph(program_node)
-
     for control_flow_node in control_flow_graph.get_control_flow_nodes():
         program_graph.add_node_from_instruction(control_flow_node.instruction)
-
     for ast_node in ast.walk(program_node):
         if not program_graph.contains_ast_node(ast_node):
             pg_node = make_node_from_ast_node(ast_node)
             program_graph.add_node(pg_node)
-
     root = program_graph.get_node_by_ast_node(program_node)
     program_graph.root_id = root.id
 
-    # Add AST edges (FIELD), AST_LIST and AST_VALUE nodes.
     for ast_node in ast.walk(program_node):
         for field_name, value in ast.iter_fields(ast_node):
             if isinstance(value, list):
@@ -513,7 +594,7 @@ def get_program_graph(program):
                     ast_node, pg_node, pb.EdgeType.FIELD, field_name
                 )
                 for index, item in enumerate(value):
-                    list_field_name = make_list_field_name(field_name, index)
+                    list_field_name = "{}:{}".format(field_name, index)
                     if isinstance(item, ast.AST):
                         program_graph.add_new_edge(
                             pg_node, item, pb.EdgeType.FIELD, list_field_name
@@ -535,15 +616,12 @@ def get_program_graph(program):
                     ast_node, pg_node, pb.EdgeType.FIELD, field_name
                 )
 
-    # Add SYNTAX_NODE nodes using the custom AST unparser.
     SyntaxNodeUnparser(program_node, program_graph)
 
-    # Perform data flow analysis.
     analysis = data_flow.LastAccessAnalysis()
     for node in control_flow_graph.get_enter_control_flow_nodes():
         analysis.visit(node)
 
-    # Add control flow edges (CFG_NEXT).
     for control_flow_node in control_flow_graph.get_control_flow_nodes():
         instruction = control_flow_node.instruction
         for next_control_flow_node in control_flow_node.next:
@@ -552,9 +630,7 @@ def get_program_graph(program):
                 instruction.node, next_instruction.node, edge_type=pb.EdgeType.CFG_NEXT
             )
 
-    # Add data flow edges (LAST_READ and LAST_WRITE).
     for control_flow_node in control_flow_graph.get_control_flow_nodes():
-        # Convert the label to a dict and convert each value to a list.
         last_accesses = {
             k: list(v) for k, v in control_flow_node.get_label("last_access_in").items()
         }
@@ -565,7 +641,6 @@ def get_program_graph(program):
             write_identifier = instruction_module.access_identifier(
                 access_name, "write"
             )
-            # Add LAST_READ edge if a previous read exists.
             if read_identifier in last_accesses and last_accesses[read_identifier]:
                 last_read = last_accesses[read_identifier][0]
                 program_graph.add_new_edge(
@@ -573,7 +648,6 @@ def get_program_graph(program):
                     program_graph.get_node_by_access(last_read),
                     edge_type=pb.EdgeType.LAST_READ,
                 )
-            # Add LAST_WRITE edge if a previous write exists.
             if write_identifier in last_accesses and last_accesses[write_identifier]:
                 last_write = last_accesses[write_identifier][0]
                 program_graph.add_new_edge(
@@ -582,11 +656,24 @@ def get_program_graph(program):
                     edge_type=pb.EdgeType.LAST_WRITE,
                 )
             if instruction_module.access_is_read(access):
+                if read_identifier in last_accesses and last_accesses[read_identifier]:
+                    last_read = last_accesses[read_identifier][0]
+                    program_graph.add_new_edge(
+                        pg_node,
+                        program_graph.get_node_by_access(last_read),
+                        edge_type=pb.EdgeType.LAST_READ,
+                    )
                 last_accesses[read_identifier] = [access]
             elif instruction_module.access_is_write(access):
+                if read_identifier in last_accesses and last_accesses[read_identifier]:
+                    last_read = last_accesses[read_identifier][0]
+                    program_graph.add_new_edge(
+                        pg_node,
+                        program_graph.get_node_by_access(last_read),
+                        edge_type=pb.EdgeType.LAST_READ,
+                    )
                 last_accesses[write_identifier] = [access]
 
-    # Add COMPUTED_FROM edges.
     for node in ast.walk(program_node):
         if isinstance(node, ast.Assign):
             for value_node in ast.walk(node.value):
@@ -596,11 +683,12 @@ def get_program_graph(program):
                             target, value_node, edge_type=pb.EdgeType.COMPUTED_FROM
                         )
 
-    # Add CALLS, FORMAL_ARG_NAME and RETURNS_TO edges.
     for node in ast.walk(program_node):
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
-                func_defs = list(program_graph.get_nodes_by_function_name(node.func.id))
+                func_defs = list(
+                    program_graph.get_all_function_nodes_by_name(node.func.id)
+                )
                 if not func_defs:
                     if node.func.id in dir(__import__("builtins")):
                         message = "Function is builtin."
@@ -654,7 +742,6 @@ def get_program_graph(program):
                     "Cannot statically determine the function being called. (%s)",
                     astunparse.unparse(node.func).strip(),
                 )
-
     return program_graph
 
 
@@ -663,7 +750,7 @@ class SyntaxNodeUnparser(unparser.Unparser):
 
     def __init__(self, ast_node, graph):
         self.graph = graph
-        self.current_ast_node = None  # The AST node currently being unparsed.
+        self.current_ast_node = None
         self.last_syntax_node = None
         self.last_lexical_uses = {}
         self.last_indent = 0
@@ -690,13 +777,16 @@ class SyntaxNodeUnparser(unparser.Unparser):
             self._add_syntax_node(text_with_whitespace)
             super().fill(text)
         except Exception as e:
-            error_info = {"operation": "fill", "input": text, "error_message": str(e)}
             logging.warning(
                 json.dumps(
                     {
                         "level": "warning",
                         "message": "Error in SyntaxNodeUnparser.fill",
-                        "details": error_info,
+                        "details": {
+                            "operation": "fill",
+                            "input": text,
+                            "error_message": str(e),
+                        },
                     }
                 )
             )
@@ -710,17 +800,16 @@ class SyntaxNodeUnparser(unparser.Unparser):
             self._add_syntax_node(text)
             super().write(text)
         except Exception as e:
-            error_info = {
-                "operation": "write",
-                "input": str(text),
-                "error_message": str(e),
-            }
             logging.warning(
                 json.dumps(
                     {
                         "level": "warning",
                         "message": "Error in SyntaxNodeUnparser.write",
-                        "details": error_info,
+                        "details": {
+                            "operation": "write",
+                            "input": str(text),
+                            "error_message": str(e),
+                        },
                     }
                 )
             )
@@ -745,17 +834,16 @@ class SyntaxNodeUnparser(unparser.Unparser):
                 )
             self.last_syntax_node = syntax_node
         except Exception as e:
-            error_info = {
-                "operation": "_add_syntax_node",
-                "input": text,
-                "error_message": str(e),
-            }
             logging.warning(
                 json.dumps(
                     {
                         "level": "warning",
                         "message": "Error in _add_syntax_node",
-                        "details": error_info,
+                        "details": {
+                            "operation": "_add_syntax_node",
+                            "input": text,
+                            "error_message": str(e),
+                        },
                     }
                 )
             )
@@ -775,7 +863,6 @@ class SyntaxNodeUnparser(unparser.Unparser):
 
 class ProgramGraphNode(object):
     """A single node in a Program Graph.
-
     Corresponds to either a SyntaxNode or an Instruction.
     """
 
@@ -787,7 +874,6 @@ class ProgramGraphNode(object):
         self.ast_type = ""
         self.ast_value = ""
         self.syntax = ""
-        # New fields for error handling.
         self.has_error = False
         self.error_info = None
 
@@ -803,9 +889,9 @@ class ProgramGraphNode(object):
     def node(self):
         if self.ast_node is not None:
             return self.ast_node
-        if self.instruction is None:
-            return None
-        return self.instruction.node
+        if self.instruction is not None:
+            return self.instruction.node
+        return None
 
     def __repr__(self):
         return str(self.id) + " " + str(self.ast_type)
@@ -856,5 +942,4 @@ def make_list_field_name(field_name, index):
 
 def parse_list_field_name(list_field_name):
     field_name, index = list_field_name.split(":")
-    index = int(index)
-    return field_name, index
+    return field_name, int(index)

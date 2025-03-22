@@ -212,6 +212,8 @@ def access_is_write(access):
 
 def access_name(access):
     if isinstance(access, ast.AST):
+        if isinstance(access, ast.arg):
+            return access.arg
         return access.id
     elif isinstance(access, tuple):
         if isinstance(access[1], str):

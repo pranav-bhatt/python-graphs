@@ -412,10 +412,10 @@ class ControlFlowNode:
     def next(self) -> Optional[Set[Any]]:
         if self.block is None:
             return None
-        index_in_block = self.block.index_of(self)
-        if len(self.block.control_flow_nodes) > index_in_block + 1:
-            return {self.block.control_flow_nodes[index_in_block + 1]}
-        nodes: Set[Any] = set()
+        index = self.block.index_of(self)
+        if len(self.block.control_flow_nodes) > index + 1:
+            return {self.block.control_flow_nodes[index + 1]}
+        nodes = set()
         for next_block in self.block.next:
             if next_block.control_flow_nodes:
                 nodes.add(next_block.control_flow_nodes[0])
@@ -429,7 +429,7 @@ class ControlFlowNode:
                         }
                     )
                 )
-                assert not next_block.next
+                continue
         return nodes
 
     @property
